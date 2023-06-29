@@ -16,21 +16,31 @@ const uint8_t SD_MOSI = 19;
 const uint8_t SD_CS = 10;
 const uint8_t SD_SCK = 18;
 
-auto& console = Serial;
-const auto baud = 115200;  // value is ignored for USB serial
-const auto delimiter = ',';
+
+// NOTE: This sketch is designed for TWO serials ports, preferred
+// in this order:
+//    a) Serial (USB)
+//    b) Serial1 (UART)
+// If Serial (USB) isn't avaialable (not plugged in), the
+// console output will switch to Serial1 (UART).
+
+// configure pins for Seria1 (UART)
+const auto Serial1_TX = 0;
+const auto Serial1_RX = 1;
+
+// configure serial baud rate
+const auto baud = 9600;  // value is ignored for USB serial
+
+// other configuration
+const auto data_delimiter = ',';
+const auto log_prefix = "LOG,";
+const auto data_prefix = "DATA,";
 const auto main_loop_delay = 1000;
 const auto fail_loop_delay = 5000;
 
-RTC_PCF8523 rtc;
-Adafruit_BME680 bme;  // I2C
-
-// macro to print the current function name to specified serial port
-#define PRINT_FUNC_NAME(_ser) \
-  _ser.print("["); \
-  _ser.print(__func__); \
-  _ser.print("] ");
-
+Stream* pSerialConsole; // assigned in setup()
+RTC_PCF8523 rtc;        // RTC on I2C
+Adafruit_BME680 bme;    // sensor on I2C
 
 // date and time callback for SD file
 void dtCallback(uint16_t* date, uint16_t* time) {
@@ -54,24 +64,46 @@ void setup() {
   gpio_init(LED_BUILTIN);
   gpio_set_dir(LED_BUILTIN, GPIO_OUT);
 
-  console.begin(baud);
+  // Serial1 - hardware UART (not USB)
+  Serial1.setRX(Serial1_RX);
+  Serial1.setTX(Serial1_TX);
+  Serial1.begin(baud);
+  delay(500);
+  Serial1.print(log_prefix);
+  Serial1.println("Serial1 configured");
+
+  Serial.begin(baud);
   delay(1000);
-  while (!console) {
+  for (auto i=0;!Serial && i<5;i++) {
     // wait for serial port to connect
+    Serial1.print(log_prefix);
+    Serial1.print("Serial (USB) not ready ");
+    Serial1.println(i);
     blink_led(1);
-    delay(1000);
+    delay(200);
+  }
+  if (Serial) {
+    // console on Serial (USB)
+    Serial1.print(log_prefix);
+    Serial1.println("Serial (USB) ready - using it for console");
+    pSerialConsole = &Serial;
+  } else {
+    // switch to console to Serial1
+    Serial1.print(log_prefix);
+    Serial1.print("switching console to Serial1...");
+    pSerialConsole = &Serial1;
+    pSerialConsole->println(" done");
   }
 
-
   /*--- RTC ---*/
-  PRINT_FUNC_NAME(console);
-  console.println("initializing RTC");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("initializing RTC");
 
   if (!rtc.begin()) {
     while (true) {
-      PRINT_FUNC_NAME(console);
-      console.println("Couldn't find RTC");
-      console.flush();
+      pSerialConsole->print(log_prefix);
+      pSerialConsole->println("Couldn't find RTC");
+      pSerialConsole->flush();
       blink_led(2);
       delay(fail_loop_delay);
     }
@@ -80,24 +112,24 @@ void setup() {
   rtc.start();
   delay(2000);
   while (!rtc.isrunning()) {
-    PRINT_FUNC_NAME(console);
-    console.println("RTC is NOT running");
-    console.flush();
+    pSerialConsole->print(log_prefix);
+    pSerialConsole->println("RTC is NOT running");
+    pSerialConsole->flush();
     blink_led(3);
     delay(fail_loop_delay);
   }
-  PRINT_FUNC_NAME(console); 
-  console.println("RTC initialized");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("RTC initialized");
 
   /*--- BME ---*/
-  PRINT_FUNC_NAME(console);
-  console.println("initializing BME");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("initializing BME");
 
   // look for the BME sensor
   while (!bme.begin()) {
-    PRINT_FUNC_NAME(console);
-    console.println("Could not find a valid BME680 sensor");
-    console.flush();
+    pSerialConsole->print(log_prefix);
+    pSerialConsole->println("Could not find a valid BME680 sensor");
+    pSerialConsole->flush();
     blink_led(4);
     delay(fail_loop_delay);
   }
@@ -108,11 +140,11 @@ void setup() {
   bme.setPressureOversampling(BME680_OS_4X);
   bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
   bme.setGasHeater(320, 150);  // 320*C for 150 ms
-  PRINT_FUNC_NAME(console); 
-  console.println("BME initialized");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("BME initialized");
 
-  PRINT_FUNC_NAME(console);
-  console.println("initializing SD card");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("initializing SD card");
 
   /*--- SD CARD ---*/
   // configure SPI for the SD card
@@ -121,43 +153,42 @@ void setup() {
   SPI.setSCK(SD_SCK);
 
   while (!SD.begin(SD_CS)) {
-    PRINT_FUNC_NAME(console);
-    console.println("SD initialization failed!");
-    console.flush();
+    pSerialConsole->print(log_prefix);
+    pSerialConsole->println("SD initialization failed!");
+    pSerialConsole->flush();
     blink_led(5);
     delay(fail_loop_delay);
   }
   SdFile::dateTimeCallback(dtCallback);
-  PRINT_FUNC_NAME(console); 
-  console.println("SD initialized");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("SD initialized");
 
-
-  PRINT_FUNC_NAME(console);
-  console.println("complete");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->println("complete");
 }
 
 
 
 void printReadingValues() {
-  PRINT_FUNC_NAME(console);
-  console.print("Temperature = ");
-  console.print(bme.temperature);
-  console.println(" *C");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->print("Temperature = ");
+  pSerialConsole->print(bme.temperature);
+  pSerialConsole->println(" *C");
 
-  PRINT_FUNC_NAME(console);
-  console.print("Pressure = ");
-  console.print(bme.pressure / 100.0);
-  console.println(" hPa");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->print("Pressure = ");
+  pSerialConsole->print(bme.pressure / 100.0);
+  pSerialConsole->println(" hPa");
 
-  PRINT_FUNC_NAME(console);
-  console.print("Humidity = ");
-  console.print(bme.humidity);
-  console.println(" %");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->print("Humidity = ");
+  pSerialConsole->print(bme.humidity);
+  pSerialConsole->println(" %");
 
-  PRINT_FUNC_NAME(console);
-  console.print("Gas = ");
-  console.print(bme.gas_resistance / 1000.0);
-  console.println(" KOhms");
+  pSerialConsole->print(log_prefix);
+  pSerialConsole->print("Gas = ");
+  pSerialConsole->print(bme.gas_resistance / 1000.0);
+  pSerialConsole->println(" KOhms");
 }
 
 /**
@@ -166,13 +197,13 @@ void printReadingValues() {
 String makeHeaderLine() {
   String headerLine{};
   headerLine += "timestamp";
-  headerLine += delimiter;
+  headerLine += data_delimiter;
   headerLine += "temp_C";
-  headerLine += delimiter;
+  headerLine += data_delimiter;
   headerLine += "pressure_hPa";
-  headerLine += delimiter;
+  headerLine += data_delimiter;
   headerLine += "humidity_pct";
-  headerLine += delimiter;
+  headerLine += data_delimiter;
   headerLine += "gas_resistance_kohm";
   return headerLine;
 }
@@ -182,13 +213,13 @@ String makeHeaderLine() {
  */
 String makeDataLine(const char* timestamp) {
   String dataLine{ timestamp };
-  dataLine += delimiter;
+  dataLine += data_delimiter;
   dataLine += bme.temperature;  // C
-  dataLine += delimiter;
+  dataLine += data_delimiter;
   dataLine += (bme.pressure / 100.0);  // hPa
-  dataLine += delimiter;
+  dataLine += data_delimiter;
   dataLine += bme.humidity;  // %
-  dataLine += delimiter;
+  dataLine += data_delimiter;
   dataLine += (bme.gas_resistance / 1000.0);  // kOhms
   return dataLine;
 }
@@ -199,13 +230,13 @@ void loop() {
 
   // uncomment these three lines to monitor memory
   // PRINT_FUNC_NAME(console);
-  // console.print("free heap: ");
-  // console.println(rp2040.getFreeHeap());
+  // console->print("free heap: ");
+  // console->println(rp2040.getFreeHeap());
+
 
   // want RTC time and reading temporally adjacent
   DateTime now = rtc.now();
   if (bme.performReading()) {
-
     const time_t now_t = now.unixtime();
     const auto now_tm = gmtime(&now_t);
 
@@ -215,7 +246,8 @@ void loop() {
 
     String dataLine = makeDataLine(timestamp_buffer);
 
-    console.println(dataLine);
+    pSerialConsole->print(data_prefix);
+    pSerialConsole->println(dataLine);
 
     char filename[sizeof("YYYYMMDD.csv")];
     strftime(filename, sizeof(filename), "%Y%m%d.csv", now_tm);
@@ -224,13 +256,15 @@ void loop() {
       if (!file_exists) {
         dataFile.println(makeHeaderLine());
       }
+      gpio_put(LED_BUILTIN, true);
       dataFile.println(dataLine);
+      gpio_put(LED_BUILTIN, false);
       dataFile.close();
     }
 
   } else {
-    PRINT_FUNC_NAME(console);
-    console.println("Failed to perform BME reading :(");
+    pSerialConsole->print(log_prefix);
+    pSerialConsole->println("Failed to perform BME reading :(");
   }
 
   delay(main_loop_delay);
